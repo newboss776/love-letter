@@ -637,6 +637,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
   <div id="flash"></div>
   <div id="fx"></div>
   <canvas id="burstCanvas"></canvas>
+  <audio id="intro" src="intro.m4a" loop preload="auto"></audio>
   <audio id="bgm" src="bgm.m4a" loop preload="auto"></audio>
 </div>
 
@@ -656,6 +657,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
   const flash = document.getElementById('flash');
   const fx = document.getElementById('fx');
   const audio = document.getElementById('bgm');
+  const introAudio = document.getElementById('intro');
   const muteBtn = document.getElementById('muteBtn');
   const replayBtn = document.getElementById('replayBtn');
   const canvas = document.getElementById('burstCanvas');
@@ -663,11 +665,13 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
   let count = 0;
   let bursting = false;
   let finished = false;
-  let audioStarted = false;
+  let introStarted = false;
+  let bgmStarted = false;
   let graphReady = false;
   let burstToken = 0;
   let muted = false;
-  let ctx = null, analyser = null, freqData = null, masterGain = null, audioSrc = null;
+  let ctx = null, analyser = null, freqData = null, masterGain = null;
+  let introSrc = null, introGain = null, bgmSrc = null, bgmGain = null;
   let rafId = 0;
   let crackLayer = null, shockLayer = null;
 
@@ -698,41 +702,114 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
   })();
 
   /* ---------- audio ---------- */
-  function startAudio(){
-    if (audioStarted) return;
-    audioStarted = true;
-    audio.volume = 1;
-    try { audio.currentTime = 0; } catch (e) {}
-    const p = audio.play();
-    if (p && p.catch) p.catch(() => { audioStarted = false; });
-
-    if (graphReady){
-      if (ctx && ctx.state === 'suspended') ctx.resume();
-      return;
-    }
+  function ensureAudioGraph(){
+    if (graphReady) return;
     graphReady = true;
-
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) {
-        ctx = new AC();
-        audioSrc = ctx.createMediaElementSource(audio);
-        analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = .82;
-        masterGain = ctx.createGain();
-        masterGain.gain.setValueAtTime(0, ctx.currentTime);
-        masterGain.gain.linearRampToValueAtTime(.85, ctx.currentTime + 1.6);
-        audioSrc.connect(analyser);
-        analyser.connect(masterGain);
-        masterGain.connect(ctx.destination);
-        freqData = new Uint8Array(analyser.frequencyBinCount);
-        if (ctx.state === 'suspended') ctx.resume();
-      }
+      if (!AC) return;
+      ctx = new AC();
+      masterGain = ctx.createGain();
+      masterGain.gain.value = .85;
+      masterGain.connect(ctx.destination);
+
+      introSrc = ctx.createMediaElementSource(introAudio);
+      introGain = ctx.createGain();
+      introGain.gain.value = 0;
+      introSrc.connect(introGain);
+      introGain.connect(masterGain);
+
+      bgmSrc = ctx.createMediaElementSource(audio);
+      bgmGain = ctx.createGain();
+      bgmGain.gain.value = 0;
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = .82;
+      bgmSrc.connect(bgmGain);
+      bgmGain.connect(analyser);
+      analyser.connect(masterGain);
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+
+      if (ctx.state === 'suspended') ctx.resume();
     } catch (err) {
-      ctx = null; analyser = null;
-      try { audio.volume = .85; } catch (e) {}
+      ctx = null; analyser = null; introGain = null; bgmGain = null;
+      try { introAudio.volume = .65; audio.volume = .9; } catch (e) {}
     }
+  }
+
+  function startIntro(){
+    if (introStarted) return;
+    introStarted = true;
+    ensureAudioGraph();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    try { introAudio.currentTime = 0; } catch (e) {}
+    try { introAudio.volume = 1; } catch (e) {}
+    const p = introAudio.play();
+    if (p && p.catch) p.catch(() => { introStarted = false; });
+
+    if (introGain && ctx){
+      const t = ctx.currentTime;
+      introGain.gain.cancelScheduledValues(t);
+      introGain.gain.setValueAtTime(0, t);
+      introGain.gain.linearRampToValueAtTime(.65, t + 1.4);
+    } else {
+      try { introAudio.volume = .65; } catch (e) {}
+    }
+  }
+
+  function startBgm(){
+    if (bgmStarted) return;
+    bgmStarted = true;
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    try { audio.currentTime = 0; } catch (e) {}
+    try { audio.volume = 1; } catch (e) {}
+    const p = audio.play();
+    if (p && p.catch) p.catch(() => { bgmStarted = false; });
+
+    if (bgmGain && ctx){
+      const t = ctx.currentTime;
+      bgmGain.gain.cancelScheduledValues(t);
+      bgmGain.gain.setValueAtTime(0, t);
+    } else {
+      try { audio.volume = 0; } catch (e) {}
+    }
+
+    if (introGain && ctx){
+      const t = ctx.currentTime;
+      introGain.gain.cancelScheduledValues(t);
+      introGain.gain.setValueAtTime(introGain.gain.value || .65, t);
+      introGain.gain.linearRampToValueAtTime(0, t + .7);
+      setTimeout(() => {
+        if (bgmStarted) { try { introAudio.pause(); } catch (e) {} }
+      }, 820);
+    } else {
+      try { introAudio.pause(); } catch (e) {}
+    }
+  }
+
+  function revealBgm(){
+    if (!bgmStarted) return;
+    if (audio.paused){
+      const p = audio.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+    try { audio.currentTime = 0; } catch (e) {}
+    if (bgmGain && ctx){
+      const t = ctx.currentTime;
+      bgmGain.gain.cancelScheduledValues(t);
+      bgmGain.gain.setValueAtTime(0, t);
+      bgmGain.gain.linearRampToValueAtTime(.9, t + 1.5);
+    } else {
+      try { audio.volume = 0; } catch (e) {}
+      const t0 = performance.now();
+      const fade = () => {
+        const k = Math.min(1, (performance.now() - t0) / 1500);
+        try { audio.volume = .9 * k; } catch (e) {}
+        if (k < 1) requestAnimationFrame(fade);
+      };
+      fade();
+    }
+    try { introAudio.pause(); } catch (e) {}
   }
 
   function tick(){
@@ -852,7 +929,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     if (bursting || finished) return;
     if (e.cancelable) e.preventDefault();
 
-    if (!audioStarted) startAudio();
+    if (!introStarted) startIntro();
 
     count = Math.min(MAX, count + 1);
     vibrate(count);
@@ -863,7 +940,10 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     heartBtn.classList.add('pop');
 
     update();
-    if (count >= MAX) setTimeout(burst, 40);
+    if (count >= MAX){
+      startBgm();
+      setTimeout(burst, 40);
+    }
   }
   cover.addEventListener('pointerdown', onCoverTap, { passive: false });
   cover.addEventListener('contextmenu', e => e.preventDefault());
@@ -905,6 +985,11 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
       flash.classList.remove('go');
       flash.style.opacity = '0';
     }, 2300);
+
+    setTimeout(() => {
+      if (token !== burstToken) return;
+      revealBgm();
+    }, 900);
 
     finished = true;
   }
@@ -1100,6 +1185,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     e.stopPropagation();
     muted = !muted;
     audio.muted = muted;
+    introAudio.muted = muted;
     muteBtn.classList.toggle('muted', muted);
     muteBtn.setAttribute('aria-label', muted ? '取消静音' : '静音');
   });
@@ -1111,14 +1197,27 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
 
   function resetAll(){
     try { audio.pause(); audio.currentTime = 0; } catch (err) {}
-    if (masterGain) {
+    try { introAudio.pause(); introAudio.currentTime = 0; } catch (err) {}
+    if (ctx && bgmGain) {
+      try { bgmGain.gain.cancelScheduledValues(ctx.currentTime); bgmGain.gain.value = 0; } catch (err) {}
+    }
+    if (ctx && introGain) {
+      try { introGain.gain.cancelScheduledValues(ctx.currentTime); introGain.gain.value = 0; } catch (err) {}
+    }
+    if (ctx && masterGain) {
       try { masterGain.gain.cancelScheduledValues(ctx.currentTime); masterGain.gain.value = .85; } catch (err) {}
     }
     count = 0;
     bursting = false;
     finished = false;
     burstToken++;
-    audioStarted = false;
+    introStarted = false;
+    bgmStarted = false;
+    muted = false;
+    audio.muted = false;
+    introAudio.muted = false;
+    muteBtn.classList.remove('muted');
+    muteBtn.setAttribute('aria-label', '静音');
     finalEl.classList.remove('live', 'hit');
     finalEl.hidden = true;
     cover.style.display = '';
